@@ -235,7 +235,7 @@ typedef struct _php_libvirt_cred_value {
 
 /* Private definitions */
 int vnc_refresh_screen(char *server, char *port, int scancode);
-int vnc_send_keys(char *server, char *port, unsigned char *keys);
+int vnc_send_keys(char *server, char *port, char *keys);
 int vnc_send_pointer_event(char *server, char *port, int pos_x, int pos_y, int clicked, int release);
 
 int set_logfile(char *filename, long maxsize TSRMLS_DC);
@@ -276,6 +276,9 @@ PHP_FUNCTION(libvirt_connect_get_secure);
 PHP_FUNCTION(libvirt_connect_get_information);
 /* Node functions */
 PHP_FUNCTION(libvirt_node_get_info);
+PHP_FUNCTION(libvirt_node_get_cpu_stats);
+PHP_FUNCTION(libvirt_node_get_cpu_stats_for_each_cpu);
+PHP_FUNCTION(libvirt_node_get_mem_stats);
 /* Domain functions */
 PHP_FUNCTION(libvirt_domain_new);
 PHP_FUNCTION(libvirt_domain_new_get_vnc);
@@ -285,6 +288,7 @@ PHP_FUNCTION(libvirt_domain_get_xml_desc);
 PHP_FUNCTION(libvirt_domain_get_disk_devices);
 PHP_FUNCTION(libvirt_domain_get_interface_devices);
 PHP_FUNCTION(libvirt_domain_get_screenshot);
+PHP_FUNCTION(libvirt_domain_get_screenshot_api);
 PHP_FUNCTION(libvirt_domain_get_screen_dimensions);
 PHP_FUNCTION(libvirt_domain_change_vcpus);
 PHP_FUNCTION(libvirt_domain_change_memory);

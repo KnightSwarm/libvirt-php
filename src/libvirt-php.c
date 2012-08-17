@@ -120,6 +120,7 @@ static zend_function_entry libvirt_functions[] = {
 	PHP_FE(libvirt_domain_is_active, NULL)
 	PHP_FE(libvirt_domain_get_next_dev_ids, NULL)
 	PHP_FE(libvirt_domain_get_screenshot, NULL)
+	PHP_FE(libvirt_domain_get_screenshot_api, NULL)
 	PHP_FE(libvirt_domain_get_screen_dimensions, NULL)
 	PHP_FE(libvirt_domain_send_keys, NULL)
 	PHP_FE(libvirt_domain_send_pointer_event, NULL)
@@ -169,7 +170,10 @@ static zend_function_entry libvirt_functions[] = {
 	PHP_FE(libvirt_network_get_active, NULL)
 	PHP_FE(libvirt_network_set_active, NULL)
 	/* Node functions */
-	PHP_FE(libvirt_node_get_info,NULL)
+	PHP_FE(libvirt_node_get_info, NULL)
+	PHP_FE(libvirt_node_get_cpu_stats, NULL)
+	PHP_FE(libvirt_node_get_cpu_stats_for_each_cpu, NULL)
+	PHP_FE(libvirt_node_get_mem_stats, NULL)
 	/* Nodedev functions */
 	PHP_FE(libvirt_nodedev_get, NULL)
 	PHP_FE(libvirt_nodedev_capabilities, NULL)
@@ -1075,6 +1079,8 @@ PHP_MINIT_FUNCTION(libvirt)
 	REGISTER_LONG_CONSTANT("VIR_DOMAIN_XML_SECURE", 	1, CONST_CS | CONST_PERSISTENT);
 	REGISTER_LONG_CONSTANT("VIR_DOMAIN_XML_INACTIVE", 	2, CONST_CS | CONST_PERSISTENT);
 
+	REGISTER_LONG_CONSTANT("VIR_NODE_CPU_STATS_ALL_CPUS",	VIR_NODE_CPU_STATS_ALL_CPUS, CONST_CS | CONST_PERSISTENT);
+
 	/* Domain constants */
 	REGISTER_LONG_CONSTANT("VIR_DOMAIN_NOSTATE", 		0, CONST_CS | CONST_PERSISTENT);
 	REGISTER_LONG_CONSTANT("VIR_DOMAIN_RUNNING", 		1, CONST_CS | CONST_PERSISTENT);
@@ -1518,6 +1524,263 @@ PHP_FUNCTION(libvirt_node_get_info)
 	add_assoc_long(return_value, "threads", (long)info.threads);
 	add_assoc_long(return_value, "mhz", (long)info.mhz);
 }
+
+/*
+	Function name:	libvirt_node_get_cpu_stats
+	Since version:	0.4.6
+	Description:	Function is used to get the CPU stats per nodes
+	Arguments:	@conn [resource]: resource for connection
+			@cpunr [int]: CPU number to get information about, defaults to VIR_NODE_CPU_STATS_ALL_CPUS to get information about all CPUs
+	Returns:	array of node CPU statistics including time (in seconds since UNIX epoch), cpu number and total number of CPUs on node or FALSE for error
+*/
+#if LIBVIR_VERSION_NUMBER>=9003
+PHP_FUNCTION(libvirt_node_get_cpu_stats)
+{
+	php_libvirt_connection *conn=NULL;
+	zval *zconn;
+	int cpuNum = VIR_NODE_CPU_STATS_ALL_CPUS;
+	virNodeCPUStatsPtr params;
+	virNodeInfo info;
+	long cpunr = -1;
+	int nparams = 0;
+	int i, j, numCpus;
+
+	GET_CONNECTION_FROM_ARGS("r|l", &zconn, &cpunr);
+
+	if (virNodeGetInfo(conn->conn, &info) != 0) {
+		set_error("Cannot get number of CPUs");
+		RETURN_FALSE;
+	}
+
+	numCpus = info.cpus;
+	if (cpunr > numCpus - 1) {
+		char tmp[256] = { 0 };
+		snprintf(tmp, sizeof(tmp), "Invalid CPU number, valid numbers in range 0 to %d or VIR_NODE_CPU_STATS_ALL_CPUS",
+				numCpus - 1);
+		set_error(tmp);
+
+		RETURN_FALSE;
+	}
+
+	cpuNum = (int)cpunr;
+
+	if (virNodeGetCPUStats(conn->conn, cpuNum, NULL, &nparams, 0) != 0) {
+		set_error("Cannot get number of CPU stats");
+		RETURN_FALSE;
+	}
+
+	if (nparams == 0) {
+		RETURN_TRUE;
+	}
+
+	DPRINTF("%s: Number of parameters got from virNodeGetCPUStats is %d\n", __FUNCTION__, nparams);
+
+	params = calloc(nparams, nparams * sizeof(*params));
+
+	array_init(return_value);
+	for (i = 0; i < 2; i++) {
+		zval *arr;
+		if (i > 0)
+			sleep(1);
+
+		if (virNodeGetCPUStats(conn->conn, cpuNum, params, &nparams, 0) != 0) {
+			set_error("Unable to get node cpu stats");
+			RETURN_FALSE;
+		}
+
+		ALLOC_INIT_ZVAL(arr);
+		array_init(arr);
+
+		for (j = 0; j < nparams; j++) {
+			DPRINTF("%s: Field %s has value of %llu\n", __FUNCTION__, params[j].field, params[j].value);
+
+			add_assoc_long(arr, params[j].field, params[j].value);
+		}
+
+		add_assoc_long(arr, "time", time(NULL));
+
+		add_index_zval(return_value, i, arr);
+	}
+
+	add_assoc_long(return_value, "cpus", numCpus);
+	if (cpuNum >= 0)
+		add_assoc_long(return_value, "cpu", cpunr);
+	else
+	if (cpuNum == VIR_NODE_CPU_STATS_ALL_CPUS)
+		add_assoc_string_ex(return_value, "cpu", 4, "all", 1);
+	else
+		add_assoc_string_ex(return_value, "cpu", 4, "unknown", 1);
+
+	free(params);
+	params = NULL;
+}
+#else
+PHP_FUNCTION(libvirt_node_get_cpu_stats)
+{
+	set_error("Function is not supported by libvirt, support has been added in libvirt 0.9.3");
+	RETURN_FALSE;
+}
+#endif
+
+/*
+	Function name:	libvirt_node_get_cpu_stats_for_each_cpu
+	Since version:	0.4.6
+	Description:	Function is used to get the CPU stats for each CPU on the host node
+	Arguments:	@conn [resource]: resource for connection
+			@time [int]: time in seconds to get the information about, without aggregation for further processing
+	Returns:	array of node CPU statistics for each CPU including time (in seconds since UNIX epoch), cpu number and total number of CPUs on node or FALSE for error
+*/
+#if LIBVIR_VERSION_NUMBER>=9003
+PHP_FUNCTION(libvirt_node_get_cpu_stats_for_each_cpu)
+{
+	php_libvirt_connection *conn=NULL;
+	zval *zconn;
+	virNodeCPUStatsPtr params;
+	virNodeInfo info;
+	int nparams = 0;
+	long avg = 0, iter = 0;
+	int done = 0;
+	int i, j, numCpus;
+	time_t startTime = 0;
+	zval *time_array;
+
+	GET_CONNECTION_FROM_ARGS("r|l", &zconn, &avg);
+
+	if (virNodeGetInfo(conn->conn, &info) != 0) {
+		set_error("Cannot get number of CPUs");
+		RETURN_FALSE;
+	}
+
+	if (virNodeGetCPUStats(conn->conn, VIR_NODE_CPU_STATS_ALL_CPUS, NULL, &nparams, 0) != 0) {
+		set_error("Cannot get number of CPU stats");
+		RETURN_FALSE;
+	}
+
+	if (nparams == 0) {
+		RETURN_TRUE;
+	}
+
+	DPRINTF("%s: Number of parameters got from virNodeGetCPUStats is %d\n", __FUNCTION__, nparams);
+
+	params = calloc(nparams, nparams * sizeof(*params));
+
+	numCpus = info.cpus;
+	array_init(return_value);
+
+	startTime = time(NULL);
+
+	iter = 0;
+	done = 0;
+	while ( !done ) {
+		zval *arr;
+
+		ALLOC_INIT_ZVAL(arr);
+		array_init(arr);
+		for (i = 0; i < numCpus; i++) {
+			zval *arr2;
+
+			if (virNodeGetCPUStats(conn->conn, i, params, &nparams, 0) != 0) {
+				set_error("Unable to get node cpu stats");
+				RETURN_FALSE;
+			}
+
+			ALLOC_INIT_ZVAL(arr2);
+			array_init(arr2);
+
+			for (j = 0; j < nparams; j++)
+				add_assoc_long(arr2, params[j].field, params[j].value);
+
+			add_assoc_long(arr, "time", time(NULL));
+			add_index_zval(arr, i, arr2);
+		}
+
+		add_index_zval(return_value, iter, arr);
+
+		if ((avg <= 0) || (iter == avg - 1)) {
+			done = 1;
+			break;
+		}
+
+		sleep(1);
+		iter++;
+	}
+
+	ALLOC_INIT_ZVAL(time_array);
+	array_init(time_array);
+
+	add_assoc_long(time_array, "start", startTime);
+	add_assoc_long(time_array, "finish", time(NULL));
+	add_assoc_long(time_array, "duration", time(NULL) - startTime);
+
+	add_assoc_zval(return_value, "times", time_array);
+
+	free(params);
+	params = NULL;
+}
+#else
+PHP_FUNCTION(libvirt_node_get_cpu_stats)
+{
+	set_error("Function is not supported by libvirt, support has been added in libvirt 0.9.3");
+	RETURN_FALSE;
+}
+#endif
+
+/*
+	Function name:	libvirt_node_get_mem_stats
+	Since version:	0.4.6
+	Description:	Function is used to get the memory stats per node
+	Arguments:	@conn [resource]: resource for connection
+	Returns:	array of node memory statistics including time (in seconds since UNIX epoch) or FALSE for error
+*/
+#if LIBVIR_VERSION_NUMBER>=9003
+PHP_FUNCTION(libvirt_node_get_mem_stats)
+{
+	php_libvirt_connection *conn=NULL;
+	zval *zconn;
+	int memNum = VIR_NODE_MEMORY_STATS_ALL_CELLS;
+	virNodeMemoryStatsPtr params;
+	int nparams = 0;
+	int j;
+
+	GET_CONNECTION_FROM_ARGS("r", &zconn);
+
+	if (virNodeGetMemoryStats(conn->conn, memNum, NULL, &nparams, 0) != 0) {
+		set_error("Cannot get number of memory stats");
+		RETURN_FALSE;
+	}
+
+	if (nparams == 0) {
+		RETURN_TRUE;
+	}
+
+	DPRINTF("%s: Number of parameters got from virNodeGetMemoryStats is %d\n", __FUNCTION__, nparams);
+
+	params = calloc(nparams, nparams * sizeof(*params));
+
+	array_init(return_value);
+	if (virNodeGetMemoryStats(conn->conn, memNum, params, &nparams, 0) != 0) {
+		set_error("Unable to get node memory stats");
+		RETURN_FALSE;
+	}
+
+	for (j = 0; j < nparams; j++) {
+		DPRINTF("%s: Field %s has value of %llu\n", __FUNCTION__, params[j].field, params[j].value);
+
+		add_assoc_long(return_value, params[j].field, params[j].value);
+	}
+
+	add_assoc_long(return_value, "time", time(NULL));
+
+	free(params);
+	params = NULL;
+}
+#else
+PHP_FUNCTION(libvirt_node_get_mem_stats)
+{
+	set_error("Function is not supported by libvirt, support has been added in libvirt 0.9.3");
+	RETURN_FALSE;
+}
+#endif
 
 /*
 	Function name:	libvirt_connect_get_information
@@ -2824,6 +3087,93 @@ PHP_FUNCTION(libvirt_domain_get_uuid_string)
 
 	RETURN_STRING(uuid,0);
 }
+
+/*
+	Private function name:	streamSink
+	Since version:		0.4.5
+	Description:		Function to write stream to file, borrowed from libvirt
+	Arguments:		@st [virStreamPtr]: stream pointer
+				@bytes [void *]: buffer array
+				@nbytes [int]: size of buffer
+				@opaque [void *]: used for file descriptor
+	Returns:		write() error code as it's calling write
+*/
+
+static int streamSink(virStreamPtr st ATTRIBUTE_UNUSED,
+                         const char *bytes, size_t nbytes, void *opaque)
+{
+    int *fd = opaque;
+
+    return write(*fd, bytes, nbytes);
+}
+
+/*
+	Function name:	libvirt_domain_get_screenshot_api
+	Since version:	0.4.5
+	Description:	Function is trying to get domain screenshot using libvirt virGetDomainScreenshot() API if available.
+	Arguments:	@res [resource]: libvirt domain resource, e.g. from libvirt_domain_get_by_*()
+			@screenID [int]: monitor ID from where to take screenshot
+	Returns:	array of filename and mime type as type is hypervisor specific, caller is responsible for temporary file deletion
+*/
+#if LIBVIR_VERSION_NUMBER>=9002
+PHP_FUNCTION(libvirt_domain_get_screenshot_api)
+{
+	php_libvirt_domain *domain=NULL;
+	zval *zdomain;
+	unsigned int screen = 0;
+	int fd = -1;
+	char file[] = "/tmp/libvirt-php-tmp-XXXXXX";
+	virStreamPtr st = NULL;
+	char *mime = NULL;
+
+	GET_DOMAIN_FROM_ARGS("r|l",&zdomain, &screen);
+
+	st = virStreamNew(domain->conn->conn, 0);
+	mime = virDomainScreenshot(domain->domain, st, screen, 0);
+	if (!mime) {
+		set_error_if_unset("Cannot get domain screenshot");
+		RETURN_FALSE;
+	}
+
+	if (mkstemp(file) == 0)
+		RETURN_FALSE;
+
+	if ((fd = open(file, O_WRONLY|O_CREAT|O_EXCL, 0666)) < 0) {
+		if (errno != EEXIST ||
+		(fd = open(file, O_WRONLY|O_TRUNC, 0666)) < 0) {
+			virStreamFree(st);
+			set_error_if_unset("Cannot get create file to save domain screenshot");
+			RETURN_FALSE;
+		}
+	}
+
+	if (virStreamRecvAll(st, streamSink, &fd) < 0) {
+		virStreamFree(st);
+		set_error_if_unset("Cannot receive screenshot data");
+		RETURN_FALSE;
+	}
+
+	close(fd);
+
+	if (virStreamFinish(st) < 0) {
+		virStreamFree(st);
+		set_error_if_unset("Cannot close stream for domain");
+		RETURN_FALSE;
+	}
+
+	virStreamFree(st);
+
+	array_init(return_value);
+	add_assoc_string_ex(return_value, "file", 5, file, 1);
+	add_assoc_string_ex(return_value, "mime", 5, mime, 1);
+}
+#else
+PHP_FUNCTION(libvirt_domain_get_screenshot_api)
+{
+	set_error("Function is not supported by libvirt, you need at least libvirt 0.9.2 to support this function");
+	RETURN_FALSE;
+}
+#endif
 
 /*
 	Function name:	libvirt_domain_get_screenshot
@@ -5059,11 +5409,20 @@ PHP_FUNCTION(libvirt_domain_migrate)
 	uri_len=0;
 	uri=NULL;
 	
-	GET_DOMAIN_FROM_ARGS("rrl|sl",&zdomain,&zdconn,&flags,&dname,&dname_len,&uri,&uri_len,&bandwidth);
+	GET_DOMAIN_FROM_ARGS("rrl|sl",&zdomain,&zdconn,&flags,&dname,&dname_len,&bandwidth);
+
+	if ((domain->domain == NULL) || (domain->conn->conn == NULL)) {
+		set_error("Domain object is not valid");
+		RETURN_FALSE;
+	}
+
 	ZEND_FETCH_RESOURCE(dconn, php_libvirt_connection*, &zdconn, -1, PHP_LIBVIRT_CONNECTION_RES_NAME, le_libvirt_connection);
-	if ((dconn==NULL) || (dconn->conn==NULL)) RETURN_FALSE;
+	if ((dconn==NULL) || (dconn->conn==NULL)) {
+		set_error("Destination connection object is not valid");
+		RETURN_FALSE;
+	}
  
-	destdomain=virDomainMigrate(domain->domain,dconn->conn,flags,dname,uri,bandwidth);
+	destdomain=virDomainMigrate(domain->domain, dconn->conn, flags, dname, NULL, bandwidth);
 	if (destdomain == NULL) RETURN_FALSE;
 
 	res_domain= emalloc(sizeof(php_libvirt_domain));
